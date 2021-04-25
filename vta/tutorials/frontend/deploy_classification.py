@@ -189,6 +189,7 @@ with autotvm.tophub.context(target):
     else:
         relay_prog = mod["main"]
 
+#print(relay_prog)
     # Compile Relay program with AlterOpLayout disabled
     if target.device_name != "vta":
         with tvm.transform.PassContext(opt_level=3, disabled_pass={"AlterOpLayout"}):
@@ -196,13 +197,12 @@ with autotvm.tophub.context(target):
                 relay_prog, target=target, params=params, target_host=env.target_host
             )
     else:
-        with vta.build_config(opt_level=3, disabled_pass={"AlterOpLayout"}):
+        with vta.build_config(1<<1,opt_level=3, disabled_pass={"AlterOpLayout"}):
             lib = relay.build(relay_prog, target=target, params=params, target_host=env.target_host)
 
     # Measure Relay build time
     build_time = time.time() - build_start
     print(model + " inference graph built in {0:.2f}s!".format(build_time))
-
     # Send the inference library over to the remote RPC server
     temp = utils.tempdir()
     lib.export_library(temp.relpath("graphlib.tar"))
@@ -211,7 +211,6 @@ with autotvm.tophub.context(target):
 
     # Graph executor
     m = graph_executor.GraphModule(lib["default"](ctx))
-
 ######################################################################
 # Perform image classification inference
 # --------------------------------------
@@ -250,15 +249,24 @@ rep = 3  # number of measurements (we derive std dev from this)
 timer = m.module.time_evaluator("run", ctx, number=num, repeat=rep)
 
 if env.TARGET in ["sim", "tsim"]:
+    f = open("./output1.txt","w")
     simulator.clear_stats()
     timer()
     sim_stats = simulator.stats()
+    idx = 1
     print("\nExecution statistics:")
     for k, v in sim_stats.items():
         # Since we execute the workload many times, we need to normalize stats
         # Note that there is always one warm up run
         # Therefore we divide the overall stats by (num * rep + 1)
-        print("\t{:<16}: {:>16}".format(k, v // (num * rep + 1)))
+        if idx<10:
+            print("\t{:<16}: {:>16}".format(k, v // (num * rep + 1)))
+        else:
+            data = "%d\n"%v
+            f.write(data)
+#print(v)
+        idx = idx + 1
+    f.close()
 else:
     tcost = timer()
     std = np.std(tcost.results) * 1000
