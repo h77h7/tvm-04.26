@@ -1026,12 +1026,14 @@ class CommandQueue {
       insn_queue_.RewriteForceSerial();
     } else {
       // This will issue finish after last store finishes
-      insn_queue_.DepPush(kStoreStage, kAluStage);
-      insn_queue_.DepPush(kAluStage, kComputeStage);
+      //insn_queue_.DepPush(kStoreStage, kAluStage);
+      //insn_queue_.DepPush(kAluStage, kComputeStage);
+      insn_queue_.DepPush(kStoreStage, kComputeStage);
       insn_queue_.DepPush(kLoadStage, kComputeStage);
-      insn_queue_.DepPop(kStoreStage, kAluStage);
-      insn_queue_.DepPop(kAluStage, kComputeStage);
+      //insn_queue_.DepPop(kStoreStage, kAluStage);
+      //insn_queue_.DepPop(kAluStage, kComputeStage);
       insn_queue_.DepPop(kLoadStage, kComputeStage);
+      insn_queue_.DepPop(kStoreStage, kComputeStage);
       insn_queue_.CommitPendingPop(kComputeStage);
     }
     // NOTE: FINISH cannot contain pop
