@@ -810,7 +810,7 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
     }
   }
   void CommitPending() {
-    for (int i = kLoadStage; i <= kAluStage; ++i) {
+    for (int i = kLoadStage; i <= kStoreStage; ++i) {
       CommitPendingPop(i);
     }
   }
