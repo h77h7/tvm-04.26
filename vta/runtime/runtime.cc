@@ -1294,6 +1294,27 @@ void VTAStoreBuffer2D(VTACommandHandle cmd, uint32_t src_sram_index, uint32_t sr
 void VTAUopPush(uint32_t mode, uint32_t reset_out, uint32_t dst_index, uint32_t src_index,
                 uint32_t wgt_index, uint32_t opcode, uint32_t use_imm, int32_t imm_val) {
   vta::CommandQueue::ThreadLocal()->record_kernel()->Push(mode, reset_out, dst_index, src_index,
+                                                          wgt_index, opcode, use_imm, imm_val);
+}
+
+void VTAUopLoopBegin(uint32_t extent, uint32_t dst_factor, uint32_t src_factor,
+                     uint32_t wgt_factor) {
+  vta::CommandQueue::ThreadLocal()->record_kernel()->PushLoopBegin(extent, dst_factor, src_factor,
+                                                                   wgt_factor);
+}
+
+void VTAUopLoopEnd() { vta::CommandQueue::ThreadLocal()->record_kernel()->PushLoopEnd(); }
+
+int VTAPushGEMMOp(void** uop_handle, int (*finit)(void*), void* signature, int nbytes) {
+  vta::CommandQueue::ThreadLocal()->PushGEMMOp(uop_handle, finit, signature, nbytes);
+  return 0;
+}
+
+int VTAPushALUOp(void** uop_handle, int (*finit)(void*), void* signature, int nbytes) {
+  vta::CommandQueue::ThreadLocal()->PushALUUop(uop_handle, finit, signature, nbytes);
+  return 0;
+}
+
 int VTADepPush(VTACommandHandle cmd, int from_qid, int to_qid) {
   static_cast<vta::CommandQueue*>(cmd)->DepPush(from_qid, to_qid);
   return 0;
