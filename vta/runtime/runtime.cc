@@ -477,7 +477,7 @@ class UopKernelMap {
   std::vector<UopKernel*> kmap_;
 };
 
-enum PipelineStage : int { kNoneStage = 0, kLoadStage = 1, kComputeStage = 2, kStoreStage = 3 };
+enum PipelineStage : int { kNoneStage = 0, kLoadStage = 1, kComputeStage = 2, kAluStage = 3, kStoreStage = 4 };
 
 // Instruction Queue
 template <int kMaxBytes, bool kCoherent, bool kAlwaysCache>
@@ -487,8 +487,8 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
   void InitSpace() {
     BaseQueue::InitSpace(kElemBytes, kMaxBytes, kCoherent, kAlwaysCache);
     // Initialize the stage
-    std::fill(pending_pop_prev_, pending_pop_prev_ + 4, 0);
-    std::fill(pending_pop_next_, pending_pop_next_ + 4, 0);
+    std::fill(pending_pop_prev_, pending_pop_prev_ + 5, 0);
+    std::fill(pending_pop_next_, pending_pop_next_ + 5, 0);
   }
   /*! \return The data pointer. */
   VTAGenericInsn* data() { return dram_buffer_.data(); }
@@ -541,7 +541,7 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
   // Create a new instruction for a GEMM stage
   VTAGemInsn* CreateGemInsn() { return reinterpret_cast<VTAGemInsn*>(Create(kComputeStage)); }
   // Create a new instruction for a ALU stage
-  VTAAluInsn* CreateAluInsn() { return reinterpret_cast<VTAAluInsn*>(Create(kComputeStage)); }
+  VTAAluInsn* CreateAluInsn() { return reinterpret_cast<VTAAluInsn*>(Create(kAluStage)); }
   // Create a new instruction for a memory stage
   VTAMemInsn* CreateMemInsn(int memory_type) {
     return reinterpret_cast<VTAMemInsn*>(Create(GetMemPipelineStage(memory_type)));
@@ -567,16 +567,26 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
         mem_ptr[i - 1].push_next_dep = false;
         mem_ptr[i].pop_prev_dep = false;
         mem_ptr[i].pop_next_dep = true;
-      } else if (prev == kStoreStage && now == kComputeStage) {
-        mem_ptr[i - 1].push_prev_dep = true;
-        mem_ptr[i - 1].push_next_dep = false;
-        mem_ptr[i].pop_prev_dep = false;
-        mem_ptr[i].pop_next_dep = true;
-      } else if (prev == kComputeStage && now == kStoreStage) {
+      } else if (prev == kComputeStage && now == kAluStage) {
         mem_ptr[i - 1].push_prev_dep = false;
         mem_ptr[i - 1].push_next_dep = true;
         mem_ptr[i].pop_prev_dep = true;
         mem_ptr[i].pop_next_dep = false;
+      } else if (prev == kAluStage && now == kComputeStage) {
+        mem_ptr[i - 1].push_prev_dep = true;
+        mem_ptr[i - 1].push_next_dep = false;
+        mem_ptr[i].pop_prev_dep = false;
+        mem_ptr[i].pop_next_dep = true;
+      } else if (prev == kAluStage && now == kStoreStage) {
+        mem_ptr[i - 1].push_prev_dep = false;
+        mem_ptr[i - 1].push_next_dep = true;
+        mem_ptr[i].pop_prev_dep = true;
+        mem_ptr[i].pop_next_dep = false;
+      } else if (prev == kStoreStage && now = kAluStage) {
+        mem_ptr[i - 1].push_prev_dep = true;
+        mem_ptr[i - 1].push_next_dep = false;
+        mem_ptr[i].pop_prev_dep = false;
+        mem_ptr[i].pop_next_dep = true;
       } else {
         mem_ptr[i - 1].push_prev_dep = false;
         mem_ptr[i - 1].push_next_dep = false;
@@ -592,13 +602,22 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
     // before last FINISH instruction
     if (mem_last_store_ptr && mem_last_ptr == mem_last_store_ptr) {
       mem_last_store_ptr->push_prev_dep = true;
-      if (!pending_pop_next_[kComputeStage]) {
-        DepPop(kStoreStage, kComputeStage);
+      if (!pending_pop_next_[kAluStage]) {
+        DepPop(kStoreStage, kAluStage);
       }
-      CommitPendingPop(kComputeStage);
+      CommitPendingPop(kAluStage);
     } else {
-      pending_pop_next_[kComputeStage] = 0;
+      pending_pop_next_[kAluStage] = 0;
     }
+    DepPush(kAluStage, kComputeStage);
+    DepPop(kComputeStage, kAluStage);
+    if (!pending_pop_next_[kComputeStage]) {
+      DepPop(kAluStage, kComputeStage);
+    }
+    CommitPendingPop(kComputeStage);
+    DepPush(kComputeStage, kAluStage);
+    CommitPendingPop(kAluStage);
+    
     DepPush(kComputeStage, kLoadStage);
     DepPop(kLoadStage, kComputeStage);
     if (!pending_pop_next_[kLoadStage]) {
@@ -639,9 +658,12 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
   void DumpInsn() {
     // Keep tabs on dependence queues
     int l2g_queue = 0;
+    int g2a_queue = 0;
+    int a2s_queue = 0;
+    int s2a_queue = 0;
+    int a2g_queue = 0;
     int g2l_queue = 0;
-    int s2g_queue = 0;
-    int g2s_queue = 0;
+    
     // Converter
     union VTAInsn c;
     // Iterate over all instructions
@@ -668,8 +690,8 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
           if (c.mem.opcode == VTA_OPCODE_STORE) {
             CHECK(c.mem.pop_next_dep == false);
             CHECK(c.mem.push_next_dep == false);
-            if (c.mem.pop_prev_dep) g2s_queue--;
-            if (c.mem.push_prev_dep) s2g_queue++;
+            if (c.mem.pop_prev_dep) a2s_queue--;
+            if (c.mem.push_prev_dep) s2a_queue++;
           } else if (c.mem.opcode == VTA_OPCODE_LOAD &&
                      (c.mem.memory_type == VTA_MEM_ID_INP || c.mem.memory_type == VTA_MEM_ID_WGT)) {
             CHECK(c.mem.pop_prev_dep == false);
@@ -679,11 +701,12 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
           } else {
             if (c.mem.pop_prev_dep) l2g_queue--;
             if (c.mem.push_prev_dep) g2l_queue++;
-            if (c.mem.pop_next_dep) s2g_queue--;
-            if (c.mem.push_next_dep) g2s_queue++;
+            if (c.mem.pop_next_dep) a2g_queue--;
+            if (c.mem.push_next_dep) g2a_queue++;
           }
           printf("\tl2g_queue = %d, g2l_queue = %d\n", l2g_queue, g2l_queue);
-          printf("\ts2g_queue = %d, g2s_queue = %d\n", s2g_queue, g2s_queue);
+          printf("\tg2a_queue = %d, a2g_queue = %d\n", g2a_queue, a2g_queue);
+          printf("\ta2s_queue = %d, s2a_queue = %d\n", a2s_queue, s2a_queue);
           continue;
         }
         // Print instruction field information
@@ -745,8 +768,8 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
         if (c.mem.opcode == VTA_OPCODE_STORE) {
           CHECK(c.mem.pop_next_dep == false);
           CHECK(c.mem.push_next_dep == false);
-          if (c.mem.pop_prev_dep) g2s_queue--;
-          if (c.mem.push_prev_dep) s2g_queue++;
+          if (c.mem.pop_prev_dep) a2s_queue--;
+          if (c.mem.push_prev_dep) s2a_queue++;
         } else if (c.mem.opcode == VTA_OPCODE_LOAD &&
                    (c.mem.memory_type == VTA_MEM_ID_INP || c.mem.memory_type == VTA_MEM_ID_WGT)) {
           CHECK(c.mem.pop_prev_dep == false);
@@ -756,25 +779,30 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
         } else {
           if (c.mem.pop_prev_dep) l2g_queue--;
           if (c.mem.push_prev_dep) g2l_queue++;
-          if (c.mem.pop_next_dep) s2g_queue--;
-          if (c.mem.push_next_dep) g2s_queue++;
+          if (c.mem.pop_next_dep) a2g_queue--;
+          if (c.mem.push_next_dep) g2a_queue++;
         }
-      } else if (c.mem.opcode == VTA_OPCODE_GEMM || c.mem.opcode == VTA_OPCODE_ALU) {
-        // Print instruction field information
-        if (c.gemm.pop_prev_dep) l2g_queue--;
-        if (c.gemm.push_prev_dep) g2l_queue++;
-        if (c.gemm.pop_next_dep) s2g_queue--;
-        if (c.gemm.push_next_dep) g2s_queue++;
+      } else if (c.mem.opcode == VTA_OPCODE_GEMM) {
+          if (c.gemm.pop_prev_dep) l2g_queue--;
+          if (c.gemm.pop_next_dep) a2g_queue--;
+          if (c.gemm.push_prev_dep) g2l_queue++;
+          if (c.gemm.push_next_dep) g2a_queue++;
+      } else if (c.mem.opcode == VTA_OPCODE_ALU) {
+          if (c.gemm.pop_prev_dep) g2a_queue--;
+          if (c.gemm.pop_next_dep) s2a_queue--;
+          if (c.gemm.push_prev_dep) a2g_queue++;
+          if (c.gemm.push_next_dep) a2s_queue++;
       }
       printf("\tl2g_queue = %d, g2l_queue = %d\n", l2g_queue, g2l_queue);
-      printf("\ts2g_queue = %d, g2s_queue = %d\n", s2g_queue, g2s_queue);
+      printf("\tg2a_queue = %d, a2g_queue = %d\n", g2a_queue, a2g_queue);
+      printf("\ta2s_queue = %d, s2a_queue = %d\n", a2s_queue, s2a_queue);
     }
   }
   // Commit all pending pop of corresponding stage
   void CommitPendingPop(int stage) {
     // Handle the LD<->compute queue
     // NOTE: pop executes on target(stage)
-    CHECK(stage > 0 && stage < 4);
+    CHECK(stage > 0 && stage < 5);
     if (pending_pop_prev_[stage] || pending_pop_next_[stage]) {
       PushNoop(stage, false, false, pending_pop_prev_[stage], pending_pop_next_[stage]);
       pending_pop_prev_[stage] = 0;
@@ -782,7 +810,7 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
     }
   }
   void CommitPending() {
-    for (int i = kLoadStage; i <= kStoreStage; ++i) {
+    for (int i = kLoadStage; i <= kAluStage; ++i) {
       CommitPendingPop(i);
     }
   }
@@ -837,7 +865,7 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
   // Get stage of the computation
   static PipelineStage GetPipelineStage(VTAMemInsn* insn) {
     if (insn->opcode == VTA_OPCODE_GEMM) return kComputeStage;
-    if (insn->opcode == VTA_OPCODE_ALU) return kComputeStage;
+    if (insn->opcode == VTA_OPCODE_ALU) return kAluStage;
     if (insn->opcode == VTA_OPCODE_LOAD) {
       if (insn->x_size == 0) return kNoneStage;
       if (insn->memory_type == VTA_MEM_ID_ACC) return kComputeStage;
@@ -884,8 +912,8 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
 
  private:
   // Pending pop of each isntruction queue, qid=0 is not used
-  int pending_pop_prev_[4];
-  int pending_pop_next_[4];
+  int pending_pop_prev_[5];
+  int pending_pop_next_[5];
   static constexpr int kElemBytes = sizeof(VTAGenericInsn);
   static constexpr int kMaxElems = kMaxBytes / kElemBytes;
 };
@@ -998,9 +1026,11 @@ class CommandQueue {
       insn_queue_.RewriteForceSerial();
     } else {
       // This will issue finish after last store finishes
-      insn_queue_.DepPush(kStoreStage, kComputeStage);
+      insn_queue_.DepPush(kStoreStage, kAluStage);
+      insn_queue_.DepPush(kAluStage, kComputeStage);
       insn_queue_.DepPush(kLoadStage, kComputeStage);
-      insn_queue_.DepPop(kStoreStage, kComputeStage);
+      insn_queue_.DepPop(kStoreStage, kAluStage);
+      insn_queue_.DepPop(kAluStage, kComputeStage);
       insn_queue_.DepPop(kLoadStage, kComputeStage);
       insn_queue_.CommitPendingPop(kComputeStage);
     }
@@ -1264,27 +1294,6 @@ void VTAStoreBuffer2D(VTACommandHandle cmd, uint32_t src_sram_index, uint32_t sr
 void VTAUopPush(uint32_t mode, uint32_t reset_out, uint32_t dst_index, uint32_t src_index,
                 uint32_t wgt_index, uint32_t opcode, uint32_t use_imm, int32_t imm_val) {
   vta::CommandQueue::ThreadLocal()->record_kernel()->Push(mode, reset_out, dst_index, src_index,
-                                                          wgt_index, opcode, use_imm, imm_val);
-}
-
-void VTAUopLoopBegin(uint32_t extent, uint32_t dst_factor, uint32_t src_factor,
-                     uint32_t wgt_factor) {
-  vta::CommandQueue::ThreadLocal()->record_kernel()->PushLoopBegin(extent, dst_factor, src_factor,
-                                                                   wgt_factor);
-}
-
-void VTAUopLoopEnd() { vta::CommandQueue::ThreadLocal()->record_kernel()->PushLoopEnd(); }
-
-int VTAPushGEMMOp(void** uop_handle, int (*finit)(void*), void* signature, int nbytes) {
-  vta::CommandQueue::ThreadLocal()->PushGEMMOp(uop_handle, finit, signature, nbytes);
-  return 0;
-}
-
-int VTAPushALUOp(void** uop_handle, int (*finit)(void*), void* signature, int nbytes) {
-  vta::CommandQueue::ThreadLocal()->PushALUUop(uop_handle, finit, signature, nbytes);
-  return 0;
-}
-
 int VTADepPush(VTACommandHandle cmd, int from_qid, int to_qid) {
   static_cast<vta::CommandQueue*>(cmd)->DepPush(from_qid, to_qid);
   return 0;
