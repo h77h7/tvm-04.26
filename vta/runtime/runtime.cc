@@ -582,7 +582,7 @@ class InsnQueue : public BaseQueue<VTAGenericInsn> {
         mem_ptr[i - 1].push_next_dep = true;
         mem_ptr[i].pop_prev_dep = true;
         mem_ptr[i].pop_next_dep = false;
-      } else if (prev == kStoreStage && now = kAluStage) {
+      } else if (prev == kStoreStage && now == kAluStage) {
         mem_ptr[i - 1].push_prev_dep = true;
         mem_ptr[i - 1].push_next_dep = false;
         mem_ptr[i].pop_prev_dep = false;
